@@ -10,8 +10,6 @@ pragma solidity >=0.7.0 <0.9.0;
 contract QRCode is ERC721URIStorage {
     uint256[][] matrix;
     uint256[][] reserved;
-    uint256 bits = 0;
-    uint256 remaining = 8;
     using Counters for Counters.Counter;
     Counters.Counter private _tokenIds;
 
@@ -82,14 +80,24 @@ contract QRCode is ERC721URIStorage {
         uint256 dataLen = data.length;
         uint8 maxBufLen = 44;
 
-        buf = pack(buf, 4, 4, 0);
-        buf = pack(buf, dataLen, 8, 0);
+        uint256 bits = 0;
+        uint256 remaining = 8;
+
+        (buf, bits, remaining) = pack(buf, bits, remaining, 4, 4, 0);
+        (buf, bits, remaining) = pack(buf, bits, remaining, dataLen, 8, 0);
 
         for (uint8 i = 0; i < dataLen; ++i) {
-            buf = pack(buf, data[i], 8, i + 1);
+            (buf, bits, remaining) = pack(
+                buf,
+                bits,
+                remaining,
+                data[i],
+                8,
+                i + 1
+            );
         }
 
-        buf = pack(buf, 0, 4, dataLen + 1);
+        (buf, bits, remaining) = pack(buf, bits, remaining, 0, 4, dataLen + 1);
 
         for (uint256 i = data.length + 2; i < maxBufLen - 1; i++) {
             buf[i] = 0xec;
@@ -213,22 +221,33 @@ contract QRCode is ERC721URIStorage {
 
     function pack(
         uint256[44] memory buf,
+        uint256 bits,
+        uint256 remaining,
         uint256 x,
         uint256 n,
         uint256 index
-    ) public returns (uint256[44] memory) {
+    )
+        public
+        returns (
+            uint256[44] memory,
+            uint256,
+            uint256
+        )
+    {
         uint256[44] memory newBuf = buf;
+        uint256 newBits = bits;
+        uint256 newRemaining = remaining;
 
         if (n >= remaining) {
             newBuf[index] = bits | (x >> (n -= remaining));
-            bits = 0;
-            remaining = 8;
+            newBits = 0;
+            newRemaining = 8;
         }
         if (n > 0) {
-            bits |= (x & ((1 << n) - 1)) << (remaining -= n);
+            newBits |= (x & ((1 << n) - 1)) << (newRemaining -= n);
         }
 
-        return newBuf;
+        return (newBuf, newBits, newRemaining);
     }
 
     function encode(string memory str) public pure returns (uint8[] memory) {
