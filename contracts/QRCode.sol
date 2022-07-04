@@ -1,34 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/utils/Base64.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "hardhat/console.sol";
 
 pragma solidity >=0.7.0 <0.9.0;
 
-contract QRCode {
+contract QRCode is ERC721URIStorage {
     uint256[][] matrix;
     uint256[][] reserved;
-    uint256[] public buf;
-    uint8[] aligns = [4, 20];
     uint256 bits = 0;
     uint256 remaining = 8;
-    uint256[256] GF256_MAP;
-    uint256[256] GF256_INVMAP = [0];
-    uint256 gf256_value = 1;
-    string[] svg;
-    string QRCodeURI;
+    using Counters for Counters.Counter;
+    Counters.Counter private _tokenIds;
 
-    event MatrixCreated(uint256[][] matrix);
-    event Encoded(uint256[][] encoded);
-    event SVG(string[] svg);
+    constructor() ERC721("QR Code", "QR") {}
+
+    // event MatrixCreated(uint256[][] matrix);
+    // event Encoded(uint256[][] encoded);
+    // event SVG(string[] svg);
     event QRCodeURIGenerated(string str);
 
     function generateQRCode(string memory handle) public {
-        for (uint256 i = 0; i < 255; ++i) {
-            GF256_MAP[i] = gf256_value;
-            GF256_INVMAP[gf256_value] = i;
-            gf256_value = (gf256_value * 2) ^ (gf256_value >= 128 ? 0x11d : 0);
-        }
-
         // 1. Create base matrix
         createBaseMatrix();
         // 2. Encode Data
@@ -36,7 +30,7 @@ contract QRCode {
             string(abi.encodePacked("https://link3.to/", handle))
         );
         // 3. Generate buff
-        generateBuf(encoded);
+        uint256[44] memory buf = generateBuf(encoded);
         // 4. Augument ECCs
         uint256[70] memory bufWithECCs = augumentECCs(buf);
 
@@ -50,7 +44,18 @@ contract QRCode {
         putFormatInfo();
 
         // 8. Compose SVG and convert to base64
-        generateQRURI();
+        string memory QRCodeURI = generateQRURI();
+
+        // uint256 newItemId = _tokenIds.current();
+
+        // Actually mint the NFT to the sender using msg.sender.
+        // _safeMint(msg.sender, newItemId);
+
+        // Set the NFTs data.
+        // _setTokenURI(newItemId, QRCodeURI);
+
+        // Increment the counter for when the next NFT is minted.
+        // _tokenIds.increment();
 
         emit QRCodeURIGenerated(QRCodeURI);
     }
@@ -69,29 +74,37 @@ contract QRCode {
         }
     }
 
-    function generateBuf(uint8[] memory data) public {
+    function generateBuf(uint8[] memory data)
+        public
+        returns (uint256[44] memory)
+    {
+        uint256[44] memory buf;
         uint256 dataLen = data.length;
         uint8 maxBufLen = 44;
 
-        pack(4, 4);
-        pack(dataLen, 8);
+        buf = pack(buf, 4, 4, 0);
+        buf = pack(buf, dataLen, 8, 0);
 
         for (uint8 i = 0; i < dataLen; ++i) {
-            pack(data[i], 8);
+            buf = pack(buf, data[i], 8, i + 1);
         }
 
-        pack(0, 4);
+        buf = pack(buf, 0, 4, dataLen + 1);
 
-        while (buf.length + 1 < maxBufLen) {
-            buf.push(0xec);
-            buf.push(0x11);
+        for (uint256 i = data.length + 2; i < maxBufLen - 1; i++) {
+            buf[i] = 0xec;
+            buf[i + 1] = 0x11;
         }
-        if (buf.length < maxBufLen) {
-            buf.push(0xec);
-        }
+
+        // while (buf.length + 1 < maxBufLen) {
+        //     buf.push(0xec);
+        //     buf.push(0x11);
+        // }
+
+        return buf;
     }
 
-    function augumentECCs(uint256[] memory poly)
+    function augumentECCs(uint256[44] memory poly)
         internal
         view
         returns (uint256[70] memory)
@@ -157,10 +170,21 @@ contract QRCode {
         view
         returns (uint256[26] memory)
     {
+        uint256[256] memory GF256_MAP;
+        uint256[256] memory GF256_INVMAP;
         uint256[70] memory modulus;
         uint8 polylen = uint8(poly.length);
         uint8 genpolylen = uint8(genpoly.length);
         uint256[26] memory result;
+        uint256 gf256_value = 1;
+
+        GF256_INVMAP[0] = 0;
+
+        for (uint256 i = 0; i < 255; ++i) {
+            GF256_MAP[i] = gf256_value;
+            GF256_INVMAP[gf256_value] = i;
+            gf256_value = (gf256_value * 2) ^ (gf256_value >= 128 ? 0x11d : 0);
+        }
 
         for (uint8 i = 0; i < 44; i++) {
             modulus[i] = poly[i];
@@ -187,16 +211,24 @@ contract QRCode {
         return result;
     }
 
-    function pack(uint256 x, uint256 n) public {
+    function pack(
+        uint256[44] memory buf,
+        uint256 x,
+        uint256 n,
+        uint256 index
+    ) public returns (uint256[44] memory) {
+        uint256[44] memory newBuf = buf;
+
         if (n >= remaining) {
-            buf.push(bits | (x >> (n -= remaining)));
-            while (n >= 8) {
-                buf.push((x >> (n -= 8)) & 255);
-            }
+            newBuf[index] = bits | (x >> (n -= remaining));
             bits = 0;
             remaining = 8;
         }
-        if (n > 0) bits |= (x & ((1 << n) - 1)) << (remaining -= n);
+        if (n > 0) {
+            bits |= (x & ((1 << n) - 1)) << (remaining -= n);
+        }
+
+        return newBuf;
     }
 
     function encode(string memory str) public pure returns (uint8[] memory) {
@@ -224,6 +256,7 @@ contract QRCode {
     function createBaseMatrix() public {
         uint256 size = 29;
         uint256[29] memory row;
+        uint8[2] memory aligns = [4, 20];
 
         for (uint256 i = 0; i < size; i++) {
             row[i] = 0;
@@ -234,26 +267,36 @@ contract QRCode {
             reserved.push(row);
         }
 
-        blit9(
+        blit(
             0,
             0,
             9,
             9,
             [0x7f, 0x41, 0x5d, 0x5d, 0x5d, 0x41, 0x17f, 0x00, 0x40]
         );
-        blit9(
+        blit(
             size - 8,
             0,
             8,
             9,
             [0x100, 0x7f, 0x41, 0x5d, 0x5d, 0x5d, 0x41, 0x7f, 0x00]
         );
-        blit8(
+        blit(
             0,
             size - 8,
             9,
             8,
-            [0xfe, 0x82, 0xba, 0xba, 0xba, 0x82, 0xfe, 0x00, 0x00]
+            [
+                uint16(0xfe),
+                uint16(0x82),
+                uint16(0xba),
+                uint16(0xba),
+                uint16(0xba),
+                uint16(0x82),
+                uint16(0xfe),
+                uint16(0x00),
+                uint16(0x00)
+            ]
         );
 
         for (uint256 i = 9; i < size - 8; ++i) {
@@ -266,53 +309,33 @@ contract QRCode {
             uint8 minj = i == 0 || i == 1 ? 1 : 0;
             uint8 maxj = i == 0 ? 1 : 2;
             for (uint8 j = minj; j < maxj; ++j) {
-                blit5(
+                blit(
                     aligns[i],
                     aligns[j],
                     5,
                     5,
-                    [0x1f, 0x11, 0x15, 0x11, 0x1f]
+                    [
+                        uint16(0x1f),
+                        uint16(0x11),
+                        uint16(0x15),
+                        uint16(0x11),
+                        uint16(0x1f),
+                        uint16(0x00),
+                        uint16(0x00),
+                        uint16(0x00),
+                        uint16(0x00)
+                    ]
                 );
             }
         }
     }
 
-    function blit9(
+    function blit(
         uint256 y,
         uint256 x,
         uint256 h,
         uint256 w,
         uint16[9] memory data
-    ) internal {
-        for (uint256 i = 0; i < h; ++i) {
-            for (uint256 j = 0; j < w; ++j) {
-                matrix[y + i][x + j] = (data[i] >> j) & 1;
-                reserved[y + i][x + j] = 1;
-            }
-        }
-    }
-
-    function blit8(
-        uint256 y,
-        uint256 x,
-        uint256 h,
-        uint256 w,
-        uint8[9] memory data
-    ) internal {
-        for (uint256 i = 0; i < h; ++i) {
-            for (uint256 j = 0; j < w; ++j) {
-                matrix[y + i][x + j] = (data[i] >> j) & 1;
-                reserved[y + i][x + j] = 1;
-            }
-        }
-    }
-
-    function blit5(
-        uint256 y,
-        uint256 x,
-        uint256 h,
-        uint256 w,
-        uint8[5] memory data
     ) internal {
         for (uint256 i = 0; i < h; ++i) {
             for (uint256 j = 0; j < w; ++j) {
@@ -409,11 +432,11 @@ contract QRCode {
         return reserved;
     }
 
-    function generateQRURI() public {
+    function generateQRURI() public returns (string memory) {
         uint256 modsize = 8;
         uint256 size = 29;
         uint256 margin = 4;
-        string memory svgString;
+        string memory QRCodeURI;
 
         string memory common = string(
             abi.encodePacked(
@@ -426,15 +449,15 @@ contract QRCode {
             )
         );
 
-        svgString = "";
+        QRCodeURI = "";
         uint256 yo = margin * modsize;
         for (uint256 y = 0; y < size; ++y) {
             uint256 xo = margin * modsize;
             for (uint256 x = 0; x < size; ++x) {
                 if (matrix[y][x] == 1) {
-                    svgString = string(
+                    QRCodeURI = string(
                         abi.encodePacked(
-                            svgString,
+                            QRCodeURI,
                             '<rect x="',
                             Strings.toString(xo),
                             '" y="',
@@ -449,21 +472,21 @@ contract QRCode {
             yo += modsize;
         }
 
-        svgString = string(
+        QRCodeURI = string(
             abi.encodePacked(
                 '<svg viewBox="0 0 296 296" style="shape-rendering:crispEdges" xmlns="http://www.w3.org/2000/svg"><style>.bg{fill:#FFF}.fg{fill:#000}</style><rect class="bg" x="0" y="0" width="296" height="296"></rect>',
-                svgString,
+                QRCodeURI,
                 "</svg>"
             )
         );
 
-        svgString = string(
+        QRCodeURI = string(
             abi.encodePacked(
                 "data:image/svg+xml;base64,",
-                Base64.encode(abi.encodePacked(svgString))
+                Base64.encode(abi.encodePacked(QRCodeURI))
             )
         );
 
-        QRCodeURI = svgString;
+        return QRCodeURI;
     }
 }
