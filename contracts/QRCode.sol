@@ -8,41 +8,47 @@ import "hardhat/console.sol";
 pragma solidity >=0.7.0 <0.9.0;
 
 contract QRCode is ERC721URIStorage {
-    uint256[][] matrix;
-    uint256[][] reserved;
+    // QRMatrix private _qrMatrix;
     using Counters for Counters.Counter;
     Counters.Counter private _tokenIds;
 
+    struct QRMatrix {
+        uint256[29][29] matrix;
+        uint256[29][29] reserved;
+    }
+
     constructor() ERC721("QR Code", "QR") {}
 
-    // event MatrixCreated(uint256[][] matrix);
+    event MatrixCreated(uint256[29][29] matrix);
+
+    event BufGenerated(uint256[70] buf);
+
     // event Encoded(uint256[][] encoded);
     // event SVG(string[] svg);
     event QRCodeURIGenerated(string str);
 
     function generateQRCode(string memory handle) public {
         // 1. Create base matrix
-        createBaseMatrix();
+        QRMatrix memory qrMatrix = createBaseMatrix();
         // 2. Encode Data
-        uint8[] memory encoded = encode(
-            string(abi.encodePacked("https://link3.to/", handle))
-        );
+        uint8[] memory encoded = encode(string(abi.encodePacked(handle)));
         // 3. Generate buff
         uint256[44] memory buf = generateBuf(encoded);
+
         // 4. Augument ECCs
         uint256[70] memory bufWithECCs = augumentECCs(buf);
 
         // 5. put data into matrix
-        putData(bufWithECCs);
+        putData(qrMatrix, bufWithECCs);
 
         // 6. mask data
-        maskData();
+        maskData(qrMatrix);
 
         // 7. Put format info
-        putFormatInfo();
+        putFormatInfo(qrMatrix);
 
         // 8. Compose SVG and convert to base64
-        string memory QRCodeURI = generateQRURI();
+        string memory QRCodeURI = generateQRURI(qrMatrix);
 
         // uint256 newItemId = _tokenIds.current();
 
@@ -58,14 +64,14 @@ contract QRCode is ERC721URIStorage {
         emit QRCodeURIGenerated(QRCodeURI);
     }
 
-    function maskData() internal {
+    function maskData(QRMatrix memory _qrMatrix) internal pure {
         for (uint256 i = 0; i < 29; ++i) {
             for (uint256 j = 0; j < 29; ++j) {
-                if (reserved[i][j] == 0) {
+                if (_qrMatrix.reserved[i][j] == 0) {
                     if (j % 3 == 0) {
-                        matrix[i][j] ^= 1;
+                        _qrMatrix.matrix[i][j] ^= 1;
                     } else {
-                        matrix[i][j] ^= 0;
+                        _qrMatrix.matrix[i][j] ^= 0;
                     }
                 }
             }
@@ -261,46 +267,52 @@ contract QRCode is ERC721URIStorage {
         return encodedArr;
     }
 
-    function bytesToUint(bytes memory b) public pure returns (uint256) {
-        uint256 number;
-        for (uint256 i = 0; i < b.length; i++) {
-            number =
-                number +
-                uint256(uint8(b[i])) *
-                (2**(8 * (b.length - (i + 1))));
-        }
-        return number;
-    }
+    // function bytesToUint(bytes memory b) public pure returns (uint256) {
+    //     uint256 number;
+    //     for (uint256 i = 0; i < b.length; i++) {
+    //         number =
+    //             number +
+    //             uint256(uint8(b[i])) *
+    //             (2**(8 * (b.length - (i + 1))));
+    //     }
+    //     return number;
+    // }
 
-    function createBaseMatrix() public {
+    function createBaseMatrix() public returns (QRMatrix memory) {
+        QRMatrix memory _qrMatrix;
         uint256 size = 29;
         uint256[29] memory row;
         uint8[2] memory aligns = [4, 20];
 
-        for (uint256 i = 0; i < size; i++) {
-            row[i] = 0;
-        }
+        // for (uint256 i = 0; i < size; i++) {
+        //     row[i] = 0;
+        // }
 
-        for (uint256 j = 0; j < size; j++) {
-            matrix.push(row);
-            reserved.push(row);
-        }
+        // for (uint256 j = 0; j < size; j++) {
+        //     _qrMatrix.matrix[j] = row;
+        //     _qrMatrix.reserved[j] = row;
+        // }
 
-        blit(
+        _qrMatrix = blit(
+            _qrMatrix,
             0,
             0,
             9,
             9,
             [0x7f, 0x41, 0x5d, 0x5d, 0x5d, 0x41, 0x17f, 0x00, 0x40]
         );
-        blit(
+
+        _qrMatrix = blit(
+            _qrMatrix,
             size - 8,
             0,
             8,
             9,
             [0x100, 0x7f, 0x41, 0x5d, 0x5d, 0x5d, 0x41, 0x7f, 0x00]
         );
+
         blit(
+            _qrMatrix,
             0,
             size - 8,
             9,
@@ -319,8 +331,8 @@ contract QRCode is ERC721URIStorage {
         );
 
         for (uint256 i = 9; i < size - 8; ++i) {
-            matrix[6][i] = matrix[i][6] = ~i & 1;
-            reserved[6][i] = reserved[i][6] = 1;
+            _qrMatrix.matrix[6][i] = _qrMatrix.matrix[i][6] = ~i & 1;
+            _qrMatrix.reserved[6][i] = _qrMatrix.reserved[i][6] = 1;
         }
 
         // alignment patterns
@@ -329,6 +341,7 @@ contract QRCode is ERC721URIStorage {
             uint8 maxj = i == 0 ? 1 : 2;
             for (uint8 j = minj; j < maxj; ++j) {
                 blit(
+                    _qrMatrix,
                     aligns[i],
                     aligns[j],
                     5,
@@ -347,24 +360,29 @@ contract QRCode is ERC721URIStorage {
                 );
             }
         }
+
+        return _qrMatrix;
     }
 
     function blit(
+        QRMatrix memory qrMatrix,
         uint256 y,
         uint256 x,
         uint256 h,
         uint256 w,
         uint16[9] memory data
-    ) internal {
+    ) internal returns (QRMatrix memory) {
         for (uint256 i = 0; i < h; ++i) {
             for (uint256 j = 0; j < w; ++j) {
-                matrix[y + i][x + j] = (data[i] >> j) & 1;
-                reserved[y + i][x + j] = 1;
+                qrMatrix.matrix[y + i][x + j] = (data[i] >> j) & 1;
+                qrMatrix.reserved[y + i][x + j] = 1;
             }
         }
+
+        return qrMatrix;
     }
 
-    function putFormatInfo() internal {
+    function putFormatInfo(QRMatrix memory _qrMatrix) internal {
         uint8[15] memory infoA = [
             0,
             1,
@@ -404,13 +422,17 @@ contract QRCode is ERC721URIStorage {
         for (uint8 i = 0; i < 15; ++i) {
             uint8 r = infoA[i];
             uint8 c = infoB[i];
-            matrix[r][8] = matrix[8][c] = (24188 >> i) & 1;
+            _qrMatrix.matrix[r][8] = _qrMatrix.matrix[8][c] = (24188 >> i) & 1;
             // we don't have to mark those bits reserved; always done
             // in makebasematrix above.
         }
     }
 
-    function putData(uint256[70] memory data) internal {
+    function putData(QRMatrix memory _qrMatrix, uint256[70] memory data)
+        internal
+        pure
+        returns (QRMatrix memory)
+    {
         int256 n = 29;
         uint256 k = 0;
         int8 dir = -1;
@@ -423,9 +445,10 @@ contract QRCode is ERC721URIStorage {
             for (int256 j = 0; j < n; j++) {
                 for (int256 ii = int256(i); ii > int256(i) - 2; ii--) {
                     if (
-                        reserved[uint256(jj)][uint256(ii)] == 0 && k >> 3 < 70
+                        _qrMatrix.reserved[uint256(jj)][uint256(ii)] == 0 &&
+                        k >> 3 < 70
                     ) {
-                        matrix[uint256(jj)][uint256(ii)] =
+                        _qrMatrix.matrix[uint256(jj)][uint256(ii)] =
                             (data[k >> 3] >> (~k & 7)) &
                             1;
                         ++k;
@@ -441,39 +464,27 @@ contract QRCode is ERC721URIStorage {
 
             dir = -dir;
         }
+
+        return _qrMatrix;
     }
 
-    function retrieveMatrix() public view returns (uint256[] memory) {
-        return matrix[0];
-    }
-
-    function retrieveReserrved() public view returns (uint256[][] memory) {
-        return reserved;
-    }
-
-    function generateQRURI() public returns (string memory) {
+    function generateQRURI(QRMatrix memory _qrMatrix)
+        public
+        pure
+        returns (string memory)
+    {
         uint256 modsize = 8;
         uint256 size = 29;
         uint256 margin = 4;
         string memory QRCodeURI;
 
-        string memory common = string(
-            abi.encodePacked(
-                ' class= "fg"',
-                ' width="',
-                Strings.toString(modsize),
-                '" height="',
-                Strings.toString(modsize),
-                '"/>'
-            )
-        );
+        string memory common = ' class= "fg"  width="8"  height="8" />';
 
-        QRCodeURI = "";
         uint256 yo = margin * modsize;
         for (uint256 y = 0; y < size; ++y) {
             uint256 xo = margin * modsize;
             for (uint256 x = 0; x < size; ++x) {
-                if (matrix[y][x] == 1) {
+                if (_qrMatrix.matrix[y][x] == 1) {
                     QRCodeURI = string(
                         abi.encodePacked(
                             QRCodeURI,
